@@ -55,7 +55,7 @@ REQUIRED_PYTHON_TOOLS = [
 
 # Required workspace tools (local directories)
 REQUIRED_WORKSPACE_TOOLS = [
-    "squad-dashboard"
+    # squad-dashboard - archived 2026-05-10, not actively used
 ]
 
 # Required environment variables (optional)
