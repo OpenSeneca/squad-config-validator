@@ -67,16 +67,19 @@ OPTIONAL_ENV_VARS = [
 SSH_KEY_NAME = "squad_ed25519"
 
 
-def run_command(cmd: List[str], check: bool = True, capture: bool = True) -> Tuple[int, str, str]:
+def run_command(cmd: List[str], check: bool = True, capture: bool = True, timeout: int = 30) -> Tuple[int, str, str]:
     """Run a command and return returncode, stdout, stderr."""
     try:
         result = subprocess.run(
             cmd,
             check=check,
             capture_output=capture,
-            text=True
+            text=True,
+            timeout=timeout
         )
         return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", f"Command timed out after {timeout} seconds"
     except subprocess.CalledProcessError as e:
         return e.returncode, e.stdout, e.stderr
     except Exception as e:
@@ -98,7 +101,8 @@ def check_cron_jobs(agent: str = "local", fix: bool = False) -> Dict:
         ip = SQUAD_AGENTS[agent]
         _, crontab_output, _ = run_command(
             ["ssh", ip, "crontab -l"],
-            check=False
+            check=False,
+            timeout=10
         )
 
     for job_name, job_config in REQUIRED_CRONS.items():
@@ -260,7 +264,8 @@ def check_tools(agent: str = "local") -> Dict:
             ip = SQUAD_AGENTS[agent]
             returncode, stdout, _ = run_command(
                 ["ssh", ip, f"pip show {tool}"],
-                check=False
+                check=False,
+                timeout=10
             )
             if returncode == 0:
                 item["status"] = "PASS"
@@ -305,7 +310,8 @@ def check_tools(agent: str = "local") -> Dict:
             tool_path = f"~/.openclaw/workspace/tools/{tool}"
             returncode, _, _ = run_command(
                 ["ssh", ip, f"test -d {tool_path}"],
-                check=False
+                check=False,
+                timeout=10
             )
             if returncode == 0:
                 item["status"] = "PASS"
@@ -340,7 +346,8 @@ def check_environment(agent: str = "local") -> Dict:
             ip = SQUAD_AGENTS[agent]
             _, value, _ = run_command(
                 ["ssh", ip, f"echo ${var_name}"],
-                check=False
+                check=False,
+                timeout=10
             )
             value = value.strip() if value else None
 
