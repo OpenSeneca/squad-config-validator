@@ -227,7 +227,7 @@ def check_ssh_keys(agent: str = "local", fix: bool = False) -> Dict:
 
 
 def check_tools(agent: str = "local") -> Dict:
-    """Check required tools are installed."""
+    """Check required tools are installed via pip or pipx."""
     result = {
         "status": "PASS",
         "items": []
@@ -244,21 +244,41 @@ def check_tools(agent: str = "local") -> Dict:
         }
 
         if agent == "local":
-            # Check local pip installation
+            # First check local pip installation
             returncode, stdout, _ = run_command(
                 ["pip", "show", tool],
                 check=False
             )
             if returncode == 0:
                 item["status"] = "PASS"
+                item["type"] = "pip"
                 # Extract version
                 for line in stdout.split('\n'):
                     if line.startswith("Version:"):
                         item["version"] = line.split(":", 1)[1].strip()
                         break
             else:
-                item["error"] = "Tool not installed via pip"
-                result["status"] = "FAIL"
+                # Check if pipx is available and tool is installed via pipx
+                pipx_returncode, pipx_stdout, _ = run_command(
+                    ["pipx", "list", "--json"],
+                    check=False
+                )
+                if pipx_returncode == 0:
+                    try:
+                        import json
+                        pipx_list = json.loads(pipx_stdout)
+                        for pkg in pipx_list.get("venvs", {}):
+                            if pkg.get("metadata", {}).get("main_package", {}).get("package") == tool.replace("squad-", ""):
+                                item["status"] = "PASS"
+                                item["type"] = "pipx"
+                                item["version"] = pkg.get("metadata", {}).get("main_package", {}).get("package_version", "unknown")
+                                break
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+                
+                if item["status"] == "FAIL":
+                    item["error"] = "Tool not installed via pip or pipx"
+                    result["status"] = "FAIL"
         else:
             # Check remote pip installation
             ip = SQUAD_AGENTS[agent]
@@ -269,13 +289,34 @@ def check_tools(agent: str = "local") -> Dict:
             )
             if returncode == 0:
                 item["status"] = "PASS"
+                item["type"] = "pip"
                 for line in stdout.split('\n'):
                     if line.startswith("Version:"):
                         item["version"] = line.split(":", 1)[1].strip()
                         break
             else:
-                item["error"] = "Tool not installed via pip"
-                result["status"] = "FAIL"
+                # Check if pipx is available on remote and tool is installed via pipx
+                pipx_returncode, pipx_stdout, _ = run_command(
+                    ["ssh", ip, f"pipx list --json"],
+                    check=False,
+                    timeout=10
+                )
+                if pipx_returncode == 0:
+                    try:
+                        import json
+                        pipx_list = json.loads(pipx_stdout)
+                        for pkg in pipx_list.get("venvs", {}):
+                            if pkg.get("metadata", {}).get("main_package", {}).get("package") == tool.replace("squad-", ""):
+                                item["status"] = "PASS"
+                                item["type"] = "pipx"
+                                item["version"] = pkg.get("metadata", {}).get("main_package", {}).get("package_version", "unknown")
+                                break
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+                
+                if item["status"] == "FAIL":
+                    item["error"] = "Tool not installed via pip or pipx"
+                    result["status"] = "FAIL"
 
         result["items"].append(item)
 
