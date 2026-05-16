@@ -1,627 +1,215 @@
 #!/usr/bin/env python3
 """
-Squad Config Validator - Validates squad agent configurations.
-
-Ensures all agents have correct setup for reliable operation:
-- Cron jobs for scheduled tasks
-- SSH keys for remote access
-- Tool installations
-- Environment variables
-
-Usage:
-    python3 main.py --local
-    python3 main.py --agent seneca
-    python3 main.py --all-agents
-    python3 main.py --agent seneca --fix
-    python3 main.py --local --output json
+Squad Config Validator - Validates OpenSeneca squad agent configurations
+Checks for best practices, common issues, and generates health scores.
 """
 
+import json
 import os
 import sys
-import subprocess
-import json
-import argparse
-import re
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-
-# Squad agent configuration
-SQUAD_AGENTS = {
-    "seneca": "100.101.15.68",
-    "marcus": "100.98.223.103",
-    "galen": "100.123.121.125",
-    "argus": "100.108.219.91",
-    "archimedes": "100.100.56.102",
-    "clutch": "100.93.69.117"
-}
-
-# Required cron jobs
-REQUIRED_CRONS = {
-    "content-pipeline": {
-        "schedule": "0 8 * * *",
-        "script": "~/.openclaw/scripts/run-content-digest.sh"
-    },
-    "axon-ingester": {
-        "schedule": "0 * * * *",
-        "script": "~/.openclaw/scripts/run-axon-auto-ingester.sh"
-    }
-}
-
-# Required tools (Python packages)
-REQUIRED_PYTHON_TOOLS = [
-    "squad-content-pipeline"
-]
-
-# Required workspace tools (local directories)
-REQUIRED_WORKSPACE_TOOLS = [
-    # squad-dashboard - archived 2026-05-10, not actively used
-]
-
-# Required environment variables (optional)
-OPTIONAL_ENV_VARS = [
-    "OPENCLAW_HOME"
-]
-
-# SSH key configuration
-SSH_KEY_NAME = "squad_ed25519"
+from typing import Dict, List, Tuple
 
 
-def run_command(cmd: List[str], check: bool = True, capture: bool = True, timeout: int = 30) -> Tuple[int, str, str]:
-    """Run a command and return returncode, stdout, stderr."""
-    try:
-        result = subprocess.run(
-            cmd,
-            check=check,
-            capture_output=capture,
-            text=True,
-            timeout=timeout
-        )
-        return result.returncode, result.stdout, result.stderr
-    except subprocess.TimeoutExpired:
-        return 124, "", f"Command timed out after {timeout} seconds"
-    except subprocess.CalledProcessError as e:
-        return e.returncode, e.stdout, e.stderr
-    except Exception as e:
-        return 1, "", str(e)
+class ConfigValidator:
+    """Validates OpenSeneca squad configuration files."""
 
+    def __init__(self):
+        self.issues = []
+        self.warnings = []
+        self.score = 100
+        self.max_deductions = 0
 
-def check_cron_jobs(agent: str = "local", fix: bool = False) -> Dict:
-    """Check required cron jobs."""
-    result = {
-        "status": "PASS",
-        "items": []
-    }
+    def validate_config(self, config_path: str) -> Dict:
+        """Validate a single configuration file."""
+        config = self._load_config(config_path)
+        if not config:
+            return self._generate_report(config_path, config)
 
-    if agent == "local":
-        # Check local crontab
-        _, crontab_output, _ = run_command(["crontab", "-l"], check=False)
-    else:
-        # Check remote crontab via SSH
-        ip = SQUAD_AGENTS[agent]
-        _, crontab_output, _ = run_command(
-            ["ssh", ip, "crontab -l"],
-            check=False,
-            timeout=10
-        )
+        # Run validation checks
+        self._check_required_keys(config)
+        self._check_agent_name_format(config)
+        self._check_cron_schedule(config)
+        self._check_tool_paths(config)
+        self._check_api_keys(config)
+        self._check_logging_config(config)
 
-    for job_name, job_config in REQUIRED_CRONS.items():
-        item = {
-            "name": job_name,
-            "status": "FAIL",
-            "schedule": job_config["schedule"],
-            "script": job_config["script"],
-            "error": None
+        return self._generate_report(config_path, config)
+
+    def _load_config(self, config_path: str) -> Dict:
+        """Load and parse configuration file."""
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            self.issues.append(f"Config file not found: {config_path}")
+            self.score -= 20
+            self.max_deductions += 20
+            return {}
+        except json.JSONDecodeError as e:
+            self.issues.append(f"Invalid JSON in {config_path}: {str(e)}")
+            self.score -= 30
+            self.max_deductions += 30
+            return {}
+
+    def _check_required_keys(self, config: Dict):
+        """Check for required configuration keys."""
+        required_keys = ['agent_name', 'role', 'heartbeat_interval']
+        missing = [k for k in required_keys if k not in config]
+        if missing:
+            self.issues.append(f"Missing required keys: {', '.join(missing)}")
+            self.score -= 15
+            self.max_deductions += 15
+
+    def _check_agent_name_format(self, config: Dict):
+        """Check agent name follows naming convention."""
+        if 'agent_name' not in config:
+            return
+        name = config['agent_name']
+        if not name.lower() in ['seneca', 'marcus', 'galen', 'archimedes', 'argus']:
+            self.warnings.append(f"Agent name '{name}' not in standard squad names")
+
+    def _check_cron_schedule(self, config: Dict):
+        """Check cron schedule is reasonable."""
+        if 'cron_schedule' in config:
+            schedule = config['cron_schedule']
+            if not schedule or schedule == "* * * * *":
+                self.issues.append("Cron schedule too frequent or missing")
+                self.score -= 10
+                self.max_deductions += 10
+
+    def _check_tool_paths(self, config: Dict):
+        """Check tool paths are valid."""
+        if 'tool_paths' in config:
+            for tool, path in config['tool_paths'].items():
+                if not os.path.exists(path):
+                    self.warnings.append(f"Tool path not found: {tool} -> {path}")
+
+    def _check_api_keys(self, config: Dict):
+        """Check API keys are properly configured."""
+        if 'api_keys' in config:
+            for service, key in config['api_keys'].items():
+                if not key or key == 'your_api_key_here':
+                    self.issues.append(f"API key placeholder for {service}")
+                    self.score -= 10
+                    self.max_deductions += 10
+
+    def _check_logging_config(self, config: Dict):
+        """Check logging configuration."""
+        if 'logging' in config:
+            if 'level' not in config['logging']:
+                self.warnings.append("Logging level not specified")
+
+    def _generate_report(self, config_path: str, config: Dict) -> Dict:
+        """Generate validation report."""
+        # Calculate final score (0-100)
+        final_score = max(0, min(100, self.score))
+
+        return {
+            "config_file": config_path,
+            "agent_name": config.get('agent_name', 'unknown'),
+            "score": final_score,
+            "max_score": 100,
+            "deductions": self.max_deductions,
+            "issues_count": len(self.issues),
+            "warnings_count": len(self.warnings),
+            "issues": self.issues,
+            "warnings": self.warnings,
+            "timestamp": datetime.now().isoformat()
         }
 
-        # Check if cron job exists
-        if job_config["script"] in crontab_output:
-            item["status"] = "PASS"
-        elif job_config["schedule"] in crontab_output and "content-digest" in crontab_output:
-            item["status"] = "PASS"
-        elif "axon-auto-ingester" in crontab_output and job_name == "axon-ingester":
-            item["status"] = "PASS"
-        else:
-            item["error"] = f"Cron job not found for {job_name}"
-            result["status"] = "FAIL"
 
-            # Auto-fix if enabled
-            if fix and agent == "local":
-                try:
-                    # Add cron job
-                    _, current_crontab, _ = run_command(["crontab", "-l"], check=False)
-                    new_crontab = f"{current_crontab}\n{job_config['schedule']} {job_config['script']}\n"
-                    subprocess.run(["crontab", "-"], input=new_crontab, text=True, check=True)
-                    item["status"] = "PASS"
-                    item["error"] = None
-                    item["fixed"] = True
-                    print(f"  ✅ Added cron job: {job_name}")
-                except Exception as e:
-                    item["error"] = f"Failed to add cron job: {str(e)}"
+def validate_all_configs(config_dir: str) -> List[Dict]:
+    """Validate all configs in directory."""
+    config_path = Path(config_dir)
+    if not config_path.exists():
+        print(f"Config directory not found: {config_dir}")
+        return []
 
-        result["items"].append(item)
-
-    return result
-
-
-def check_ssh_keys(agent: str = "local", fix: bool = False) -> Dict:
-    """Check SSH keys."""
-    result = {
-        "status": "PASS",
-        "items": []
-    }
-
-    private_key_path = Path.home() / ".ssh" / SSH_KEY_NAME
-    public_key_path = Path.home() / ".ssh" / f"{SSH_KEY_NAME}.pub"
-
-    if agent != "local":
-        # For remote agents, just check if we can SSH to them
-        ip = SQUAD_AGENTS[agent]
-        returncode, _, _ = run_command(
-            ["ssh", "-o", "ConnectTimeout=5", ip, "echo", "ok"],
-            check=False
-        )
-        item = {
-            "name": SSH_KEY_NAME,
-            "status": "PASS" if returncode == 0 else "FAIL",
-            "error": None if returncode == 0 else f"Cannot SSH to {agent}"
-        }
-        result["items"].append(item)
-        if returncode != 0:
-            result["status"] = "FAIL"
-        return result
-
-    # Check local SSH keys
-    item = {
-        "name": SSH_KEY_NAME,
-        "status": "FAIL",
-        "path": str(private_key_path),
-        "permissions": None,
-        "error": None
-    }
-
-    if private_key_path.exists():
-        # Check permissions
-        stat = private_key_path.stat()
-        perms = oct(stat.st_mode)[-3:]
-        item["permissions"] = perms
-
-        if perms == "600":
-            item["status"] = "PASS"
-        else:
-            item["error"] = f"Incorrect permissions: {perms} (should be 600)"
-            result["status"] = "FAIL"
-
-            # Auto-fix if enabled
-            if fix:
-                try:
-                    private_key_path.chmod(0o600)
-                    item["status"] = "PASS"
-                    item["error"] = None
-                    item["fixed"] = True
-                    print(f"  ✅ Fixed permissions for {SSH_KEY_NAME}")
-                except Exception as e:
-                    item["error"] = f"Failed to fix permissions: {str(e)}"
-    else:
-        item["error"] = "SSH key not found"
-        result["status"] = "FAIL"
-
-        # Auto-fix if enabled
-        if fix:
-            try:
-                # Generate SSH key
-                subprocess.run(
-                    ["ssh-keygen", "-t", "ed25519", "-f", str(private_key_path), "-N", ""],
-                    check=True
-                )
-                private_key_path.chmod(0o600)
-                item["status"] = "PASS"
-                item["error"] = None
-                item["fixed"] = True
-                print(f"  ✅ Generated SSH key: {SSH_KEY_NAME}")
-            except Exception as e:
-                item["error"] = f"Failed to generate SSH key: {str(e)}"
-
-    result["items"].append(item)
-    return result
-
-
-def check_tools(agent: str = "local") -> Dict:
-    """Check required tools are installed via pip or pipx."""
-    result = {
-        "status": "PASS",
-        "items": []
-    }
-
-    # Check Python packages
-    for tool in REQUIRED_PYTHON_TOOLS:
-        item = {
-            "name": tool,
-            "status": "FAIL",
-            "version": None,
-            "error": None,
-            "type": "pip"
-        }
-
-        if agent == "local":
-            # First check local pip installation
-            returncode, stdout, _ = run_command(
-                ["pip", "show", tool],
-                check=False
-            )
-            if returncode == 0:
-                item["status"] = "PASS"
-                item["type"] = "pip"
-                # Extract version
-                for line in stdout.split('\n'):
-                    if line.startswith("Version:"):
-                        item["version"] = line.split(":", 1)[1].strip()
-                        break
-            else:
-                # Check if pipx is available and tool is installed via pipx
-                pipx_returncode, pipx_stdout, _ = run_command(
-                    ["pipx", "list", "--json"],
-                    check=False
-                )
-                if pipx_returncode == 0:
-                    try:
-                        import json
-                        pipx_list = json.loads(pipx_stdout)
-                        for pkg in pipx_list.get("venvs", {}):
-                            if pkg.get("metadata", {}).get("main_package", {}).get("package") == tool.replace("squad-", ""):
-                                item["status"] = "PASS"
-                                item["type"] = "pipx"
-                                item["version"] = pkg.get("metadata", {}).get("main_package", {}).get("package_version", "unknown")
-                                break
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-                
-                if item["status"] == "FAIL":
-                    item["error"] = "Tool not installed via pip or pipx"
-                    result["status"] = "FAIL"
-        else:
-            # Check remote pip installation
-            ip = SQUAD_AGENTS[agent]
-            returncode, stdout, _ = run_command(
-                ["ssh", ip, f"pip show {tool}"],
-                check=False,
-                timeout=10
-            )
-            if returncode == 0:
-                item["status"] = "PASS"
-                item["type"] = "pip"
-                for line in stdout.split('\n'):
-                    if line.startswith("Version:"):
-                        item["version"] = line.split(":", 1)[1].strip()
-                        break
-            else:
-                # Check if pipx is available on remote and tool is installed via pipx
-                pipx_returncode, pipx_stdout, _ = run_command(
-                    ["ssh", ip, f"pipx list --json"],
-                    check=False,
-                    timeout=10
-                )
-                if pipx_returncode == 0:
-                    try:
-                        import json
-                        pipx_list = json.loads(pipx_stdout)
-                        for pkg in pipx_list.get("venvs", {}):
-                            if pkg.get("metadata", {}).get("main_package", {}).get("package") == tool.replace("squad-", ""):
-                                item["status"] = "PASS"
-                                item["type"] = "pipx"
-                                item["version"] = pkg.get("metadata", {}).get("main_package", {}).get("package_version", "unknown")
-                                break
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-                
-                if item["status"] == "FAIL":
-                    item["error"] = "Tool not installed via pip or pipx"
-                    result["status"] = "FAIL"
-
-        result["items"].append(item)
-
-    # Check workspace tools (local directories)
-    workspace = Path.home() / ".openclaw" / "workspace" / "tools"
-    for tool in REQUIRED_WORKSPACE_TOOLS:
-        item = {
-            "name": tool,
-            "status": "FAIL",
-            "version": None,
-            "error": None,
-            "type": "workspace"
-        }
-
-        if agent == "local":
-            tool_path = workspace / tool
-            if tool_path.exists() and tool_path.is_dir():
-                item["status"] = "PASS"
-                # Check if there's a package.json or main.py
-                if (tool_path / "package.json").exists():
-                    item["type"] = "node"
-                elif (tool_path / "main.py").exists():
-                    item["type"] = "python"
-                elif (tool_path / "server.js").exists():
-                    item["type"] = "node"
-            else:
-                item["error"] = f"Workspace tool not found: {tool}"
-                result["status"] = "FAIL"
-        else:
-            # Check remote workspace tool
-            ip = SQUAD_AGENTS[agent]
-            tool_path = f"~/.openclaw/workspace/tools/{tool}"
-            returncode, _, _ = run_command(
-                ["ssh", ip, f"test -d {tool_path}"],
-                check=False,
-                timeout=10
-            )
-            if returncode == 0:
-                item["status"] = "PASS"
-            else:
-                item["error"] = f"Workspace tool not found: {tool}"
-                result["status"] = "FAIL"
-
-        result["items"].append(item)
-
-    return result
-
-
-def check_environment(agent: str = "local") -> Dict:
-    """Check optional environment variables."""
-    result = {
-        "status": "PASS",
-        "items": []
-    }
-
-    for var_name in OPTIONAL_ENV_VARS:
-        item = {
-            "name": var_name,
-            "status": "PASS",  # Optional vars default to PASS
-            "value": None,
-            "error": None,
-            "optional": True
-        }
-
-        if agent == "local":
-            value = os.environ.get(var_name)
-        else:
-            ip = SQUAD_AGENTS[agent]
-            _, value, _ = run_command(
-                ["ssh", ip, f"echo ${var_name}"],
-                check=False,
-                timeout=10
-            )
-            value = value.strip() if value else None
-
-        if value:
-            item["value"] = value
-        else:
-            # Optional vars don't fail the check
-            item["status"] = "WARN"
-            item["error"] = f"Optional environment variable not set: {var_name}"
-
-        result["items"].append(item)
-
-    return result
-
-
-def validate_agent(agent: str, fix: bool = False) -> Dict:
-    """Validate a single agent's configuration."""
-    print(f"\n{'─' * 60}")
-    print(f"🔍 Validating: {agent}")
-    if agent != "local":
-        print(f"   IP: {SQUAD_AGENTS.get(agent, 'unknown')}")
-    print(f"{'─' * 60}\n")
-
-    results = {
-        "agent": agent,
-        "timestamp": datetime.now().isoformat(),
-        "checks": {
-            "cron_jobs": check_cron_jobs(agent, fix),
-            "ssh_keys": check_ssh_keys(agent, fix),
-            "tools": check_tools(agent),
-            "environment": check_environment(agent)
-        },
-        "summary": {
-            "total": 0,
-            "passed": 0,
-            "failed": 0
-        }
-    }
-
-    # Calculate summary
-    for check_name, check_result in results["checks"].items():
-        for item in check_result["items"]:
-            results["summary"]["total"] += 1
-            if item["status"] == "PASS":
-                results["summary"]["passed"] += 1
-            elif item.get("optional"):
-                # Optional warnings don't count as failures
-                pass
-            else:
-                results["summary"]["failed"] += 1
+    results = []
+    for config_file in sorted(config_path.glob("**/*.json")):
+        validator = ConfigValidator()
+        report = validator.validate_config(str(config_file))
+        results.append(report)
 
     return results
 
 
-def print_results(results: Dict, output_format: str = "console"):
-    """Print validation results."""
-    if output_format == "json":
-        print(json.dumps(results, indent=2))
-        return
+def generate_summary(results: List[Dict]) -> Dict:
+    """Generate summary statistics."""
+    if not results:
+        return {"total": 0, "avg_score": 0}
 
-    # Console output
-    agent = results["agent"]
-    checks = results["checks"]
-    summary = results["summary"]
+    total = len(results)
+    avg_score = sum(r['score'] for r in results) / total
+    failing = len([r for r in results if r['score'] < 70])
+    passing = len([r for r in results if r['score'] >= 70])
 
-    # Print each check category
-    for check_name, check_result in checks.items():
-        category_name = check_name.replace("_", " ").title()
-        print(f"   {category_name}")
-        print(f"   {'─' * 56}")
+    return {
+        "total_configs": total,
+        "average_score": round(avg_score, 1),
+        "passing_configs": passing,
+        "failing_configs": failing,
+        "total_issues": sum(r['issues_count'] for r in results),
+        "total_warnings": sum(r['warnings_count'] for r in results)
+    }
 
-        for item in check_result["items"]:
-            # Determine status icon based on status and optional flag
-            if item["status"] == "PASS":
-                status_icon = "✅"
-            elif item.get("optional"):
-                status_icon = "⚠️ "
-            else:
-                status_icon = "❌"
 
-            name = item.get("name", "")
-            status = item["status"]
-            error = item.get("error")
+def save_reports(results: List[Dict], output_dir: str):
+    """Save validation reports to files."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-            if status == "PASS":
-                print(f"{status_icon} {name}")
-                if item.get("version"):
-                    print(f"   Version: {item['version']}")
-                if item.get("schedule"):
-                    print(f"   Schedule: {item['schedule']}")
-                if item.get("script"):
-                    print(f"   Script: {item['script']}")
-                if item.get("permissions"):
-                    print(f"   Permissions: {item['permissions']}")
-                if item.get("value"):
-                    print(f"   Value: {item['value']}")
-                if item.get("fixed"):
-                    print(f"   ✨ Auto-fixed")
-            else:
-                print(f"{status_icon} {name}")
-                if error:
-                    print(f"   Error: {error}")
+    # Save individual reports
+    for report in results:
+        agent_name = report['agent_name']
+        report_file = output_path / f"squad-config-validator-{agent_name}.json"
+        with open(report_file, 'w') as f:
+            json.dump(report, f, indent=2)
 
-        print()
+    # Save summary
+    summary = generate_summary(results)
+    summary_file = output_path / "squad-config-validator-summary.json"
+    with open(summary_file, 'w') as f:
+        json.dump(summary, f, indent=2)
 
-    # Print summary
-    print(f"   Summary")
-    print(f"   {'─' * 56}")
-    if summary["failed"] == 0:
-        print(f"✅ All checks passed")
-        print(f"   Total: {summary['passed']}/{summary['total']} passed")
-    else:
-        print(f"❌ {summary['failed']} check(s) failed")
-        print(f"   Total: {summary['passed']}/{summary['total']} passed")
-        if summary["passed"] + summary["failed"] > 0:
-            print(f"\n⚠️  Run with --fix to auto-repair")
-
-    # Count warnings
-    warnings = 0
-    for check_name, check_result in results["checks"].items():
-        for item in check_result["items"]:
-            if item.get("optional") and item["status"] == "WARN":
-                warnings += 1
-
-    if warnings > 0:
-        print(f"\nℹ️  {warnings} optional check(s) skipped")
+    print(f"Reports saved to: {output_dir}")
+    print(f"Summary: {summary}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Squad Config Validator - Validate squad agent configurations"
-    )
-    parser.add_argument(
-        "--local",
-        action="store_true",
-        help="Validate local configuration"
-    )
-    parser.add_argument(
-        "--agent",
-        type=str,
-        choices=list(SQUAD_AGENTS.keys()),
-        help="Validate specific remote agent"
-    )
-    parser.add_argument(
-        "--all-agents",
-        action="store_true",
-        help="Validate all squad agents"
-    )
-    parser.add_argument(
-        "--fix",
-        action="store_true",
-        help="Auto-fix common issues (local only)"
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        choices=["console", "json"],
-        default="console",
-        help="Output format"
-    )
+    """Main entry point."""
+    config_dir = os.path.expanduser("~/.openclaw/workspace/configs")
+    output_dir = os.path.expanduser("~/.openclaw/workspace/outputs")
 
-    args = parser.parse_args()
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--help":
+            print("Squad Config Validator")
+            print("Validates OpenSeneca squad agent configurations")
+            print("")
+            print("Usage:")
+            print("  squad-config-validator [options]")
+            print("")
+            print("Options:")
+            print("  --help     Show this help message")
+            print("  --dir DIR  Specify config directory (default: ~/.openclaw/workspace/configs)")
+            return
 
-    print("=" * 60)
-    print("  Squad Config Validator")
-    print("=" * 60)
-
-    if args.all_agents:
-        # Validate all agents
-        print(f"\n🔍 Validating all {len(SQUAD_AGENTS)} squad agents...\n")
-
-        all_results = []
-        fully_configured = 0
-        needs_fixes = 0
-
-        for agent in SQUAD_AGENTS.keys():
-            results = validate_agent(agent)
-            print_results(results, args.output)
-            all_results.append(results)
-
-            if results["summary"]["failed"] == 0:
-                fully_configured += 1
+        if sys.argv[1] == "--dir":
+            if len(sys.argv) > 2:
+                config_dir = sys.argv[2]
             else:
-                needs_fixes += 1
+                print("Error: --dir requires a directory path")
+                return
 
-        # Overall summary
-        print(f"\n{'=' * 60}")
-        print(f"   Overall Summary")
-        print(f"{'=' * 60}")
-        print(f"✅ {fully_configured}/{len(SQUAD_AGENTS)} agents fully configured")
-        if needs_fixes > 0:
-            print(f"⚠️  {needs_fixes} agent(s) need fixes")
-            print(f"\nRun: python3 main.py --agent <name> --fix")
+    results = validate_all_configs(config_dir)
 
-        # Return exit code
-        if needs_fixes == 0:
-            return 0
-        else:
-            return 1
-
-    elif args.agent:
-        # Validate specific agent
-        results = validate_agent(args.agent, args.fix)
-        print_results(results, args.output)
-
-        # Return exit code based on results
-        if results["summary"]["failed"] == 0:
-            return 0
-        else:
-            return 1
-
-    elif args.local:
-        # Validate local configuration
-        results = validate_agent("local", args.fix)
-        print_results(results, args.output)
-
-        # Return exit code based on results
-        if results["summary"]["failed"] == 0:
-            return 0
-        else:
-            return 1
-
+    if results:
+        save_reports(results, output_dir)
     else:
-        # Default: validate local
-        results = validate_agent("local", args.fix)
-        print_results(results, args.output)
-
-        # Return exit code based on results
-        if results["summary"]["failed"] == 0:
-            return 0
-        else:
-            return 1
+        print("No config files found or validation failed")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

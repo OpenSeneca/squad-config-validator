@@ -1,8 +1,15 @@
-#!/usr/bin/env python3
-"""
-Setup script for squad-config-validator
-Minimal setup - metadata defined in pyproject.toml
-"""
-from setuptools import setup
+from setuptools import setup, find_packages
 
-setup()
+setup(
+    name="squad-config-validator",
+    version="1.0.0",
+    description="Validates OpenSeneca squad agent configurations for best practices",
+    author="Archimedes - OpenSeneca Squad",
+    python_requires=">=3.8",
+    py_modules=["main"],
+    entry_points={
+        "console_scripts": [
+            "squad-config-validator=main:main",
+        ],
+    },
+)
